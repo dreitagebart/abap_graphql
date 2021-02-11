@@ -1,4 +1,4 @@
-CLASS zcl_gql_schema_property DEFINITION
+CLASS zcl_gql_schema_field DEFINITION
   PUBLIC
   FINAL
   CREATE PUBLIC.
@@ -9,9 +9,9 @@ CLASS zcl_gql_schema_property DEFINITION
         IMPORTING
           iv_name TYPE string,
       required
-        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_property,
+        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_field,
       list
-        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_property.
+        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_field.
 
   PROTECTED SECTION.
 
@@ -23,7 +23,7 @@ ENDCLASS.
 
 
 
-CLASS zcl_gql_schema_property IMPLEMENTATION.
+CLASS zcl_gql_schema_field IMPLEMENTATION.
   METHOD required.
     mv_required = abap_true.
 

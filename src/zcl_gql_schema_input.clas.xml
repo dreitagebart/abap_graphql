@@ -3,14 +3,13 @@
  <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
   <asx:values>
    <VSEOCLASS>
-    <CLSNAME>ZCL_GQL_SCHEMA_PROPERTY</CLSNAME>
+    <CLSNAME>ZCL_GQL_SCHEMA_INPUT</CLSNAME>
     <LANGU>E</LANGU>
-    <DESCRIPT>ABAP GraphQL Schema Property</DESCRIPT>
+    <DESCRIPT>ABAP GraphQL Schema Input</DESCRIPT>
     <STATE>1</STATE>
     <CLSCCINCL>X</CLSCCINCL>
     <FIXPT>X</FIXPT>
     <UNICODE>X</UNICODE>
-    <MSG_ID>ZGQL_MESSAGES</MSG_ID>
    </VSEOCLASS>
   </asx:values>
  </asx:abap>
