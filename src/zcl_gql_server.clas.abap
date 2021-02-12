@@ -5,18 +5,27 @@ CLASS zcl_gql_server DEFINITION
 
   PUBLIC SECTION.
     INTERFACES:
-      if_http_extension,
-      if_rest_media_type,
-      if_rest_message.
+      if_http_extension.
 
-    ALIASES:
-      mc_method_post FOR if_rest_message~gc_method_post,
-      mc_method_get FOR if_rest_message~gc_method_get,
-      mc_json FOR if_rest_media_type~gc_appl_json.
+    CONSTANTS: BEGIN OF mc_methods,
+                 get     TYPE string VALUE 'GET',
+                 post    TYPE string VALUE 'POST',
+                 options TYPE string VALUE 'OPTIONS',
+               END OF mc_methods,
 
-    CONSTANTS: BEGIN OF mc_operations,
-                 save_schema TYPE string VALUE 'saveSchema',
-                 load_schema TYPE string VALUE 'loadSchema',
+               BEGIN OF mc_gql_fields,
+                 operation_name TYPE string VALUE 'OPERATION_NAME',
+                 query          TYPE string VALUE 'QUERY',
+                 variables      TYPE string VALUE 'VARIABLES',
+               END OF mc_gql_fields,
+
+               BEGIN OF mc_content_types,
+                 application_json TYPE string VALUE 'application/json',
+               END OF mc_content_types,
+
+               BEGIN OF mc_operations,
+                 save_schema TYPE string VALUE '/saveSchema',
+                 load_schema TYPE string VALUE '/loadSchema',
                END OF mc_operations.
 
   PROTECTED SECTION.
@@ -25,13 +34,18 @@ CLASS zcl_gql_server DEFINITION
              data TYPE string,
            END OF ts_response.
 
-    DATA: mo_server   TYPE REF TO if_http_server,
-          mo_json     TYPE REF TO data,
-          mv_response TYPE string.
+    DATA: mx_error     TYPE REF TO zcx_gql_error,
+          mo_server    TYPE REF TO if_http_server,
+          mo_json      TYPE REF TO data,
+          mv_operation TYPE string,
+          mv_query     TYPE string,
+          mv_variables TYPE string,
+          mv_response  TYPE string.
 
     METHODS:
+      allow_cors,
       assert_operation
-        RETURNING VALUE(rv_result) TYPE abap_bool,
+        RETURNING VALUE(rv_result) TYPE string,
       get_operation_value
         RETURNING VALUE(rv_result) TYPE string,
       get_query_string
@@ -40,12 +54,23 @@ CLASS zcl_gql_server DEFINITION
         RETURNING VALUE(rv_result) TYPE string,
       get_content_type
         RETURNING VALUE(rv_result) TYPE string,
+      get_json_field
+        IMPORTING
+                  iv_field         TYPE string
+        RETURNING VALUE(rv_result) TYPE string
+        RAISING   zcx_gql_error,
+      handle_graphql
+        RAISING zcx_gql_error,
       handle_operation,
+      handle_options,
       handle_get,
-      handle_post,
+      handle_post
+        RAISING zcx_gql_error,
       handle_response,
       read_json,
       load_schema,
+      read_graphql_data
+        RAISING zcx_gql_error,
       save_schema.
 ENDCLASS.
 
@@ -80,23 +105,50 @@ CLASS zcl_gql_server IMPLEMENTATION.
     ENDIF.
   ENDMETHOD.
 
+  METHOD allow_cors.
+    DATA: lt_response_header TYPE tihttpnvp.
+
+    mo_server->response->get_header_fields(
+      CHANGING
+        fields = lt_response_header
+    ).
+
+    APPEND VALUE #( name  = 'Access-Control-Allow-Origin'
+                    value = '*' ) TO lt_response_header.
+
+    APPEND VALUE #( name  = 'Access-Control-Allow-Headers'
+                    value = 'Content-Type' ) TO lt_response_header.
+
+    mo_server->response->set_header_fields( lt_response_header ).
+  ENDMETHOD.
+
   METHOD assert_operation.
-    rv_result = abap_false.
+    rv_result = abap_true.
 
-    ASSIGN mo_json->* TO FIELD-SYMBOL(<json>).
+    mv_operation = mo_server->request->get_header_field( '~path_info' ).
 
-    DATA(lo_type) = cl_abap_typedescr=>describe_by_data_ref( mo_json ).
-
-    CASE lo_type->kind.
-      WHEN lo_type->kind_struct.
-        DATA(lo_structure) = CAST cl_abap_structdescr( cl_abap_structdescr=>describe_by_data_ref( mo_json ) ).
-
-        DATA(lt_components) = lo_structure->get_components( ).
-
-        IF line_exists( lt_components[ name = 'OPERATION' ] ).
-          rv_result = abap_true.
-        ENDIF.
+    CASE mv_operation.
+      WHEN mc_operations-load_schema.
+      WHEN mc_operations-save_schema.
+      WHEN OTHERS.
+        CLEAR mv_operation.
+        rv_result = abap_false.
     ENDCASE.
+
+*    ASSIGN mo_json->* TO FIELD-SYMBOL(<json>).
+*
+*    DATA(lo_type) = cl_abap_typedescr=>describe_by_data_ref( mo_json ).
+*
+*    CASE lo_type->kind.
+*      WHEN lo_type->kind_struct.
+*        DATA(lo_structure) = CAST cl_abap_structdescr( cl_abap_structdescr=>describe_by_data_ref( mo_json ) ).
+*
+*        DATA(lt_components) = lo_structure->get_components( ).
+*
+*        IF line_exists( lt_components[ name = 'OPERATION' ] ).
+*          rv_result = abap_true.
+*        ENDIF.
+*    ENDCASE.
   ENDMETHOD.
 
   METHOD handle_post.
@@ -104,16 +156,63 @@ CLASS zcl_gql_server IMPLEMENTATION.
 
     IF assert_operation( ) = abap_true.
       handle_operation( ).
+    ELSE.
+      TRY.
+          handle_graphql( ).
+        CATCH zcx_gql_error INTO DATA(lx_error).
+          RAISE EXCEPTION lx_error.
+      ENDTRY.
     ENDIF.
   ENDMETHOD.
 
+  METHOD get_json_field.
+    FIELD-SYMBOLS: <ref>    TYPE REF TO data,
+                   <string> TYPE string.
+
+    ASSIGN mo_json->* TO FIELD-SYMBOL(<json>).
+
+    ASSIGN COMPONENT iv_field OF STRUCTURE <json> TO <ref>.
+
+    IF <ref> IS NOT ASSIGNED.
+      RAISE EXCEPTION TYPE zcx_gql_error
+        MESSAGE e000 WITH iv_field.
+    ENDIF.
+
+    ASSIGN <ref>->* TO <string>.
+
+    CHECK <string> IS ASSIGNED.
+
+    rv_result = <string>.
+  ENDMETHOD.
+
+  METHOD read_graphql_data.
+    TRY.
+        mv_operation = get_json_field( mc_gql_fields-operation_name ).
+        mv_query = get_json_field( mc_gql_fields-query ).
+*        mt_variables = get_json_field( mc_gql_fields-variables )->*.
+      CATCH zcx_gql_error INTO DATA(lx_error).
+        RAISE EXCEPTION lx_error.
+    ENDTRY.
+  ENDMETHOD.
+
+  METHOD handle_graphql.
+    TRY.
+        read_graphql_data( ).
+      CATCH zcx_gql_error.
+    ENDTRY.
+  ENDMETHOD.
+
   METHOD handle_operation.
-    CASE get_operation_value( ).
+    CASE mv_operation.
       WHEN mc_operations-save_schema.
         save_schema( ).
       WHEN mc_operations-load_schema.
         load_schema( ).
     ENDCASE.
+  ENDMETHOD.
+
+  METHOD handle_options.
+    mv_response = 'Ok'.
   ENDMETHOD.
 
   METHOD handle_get.
@@ -157,7 +256,9 @@ CLASS zcl_gql_server IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_response.
-    IF mv_response IS NOT INITIAL.
+    IF mx_error IS NOT BOUND.
+      allow_cors( ).
+
       mo_server->response->set_status(
         code   = cl_rest_status_code=>gc_success_ok
         reason = 'OK'
@@ -180,7 +281,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
     ELSE.
       mo_server->response->set_status(
         code   = cl_rest_status_code=>gc_client_error_bad_request
-        reason = 'Bad Request'
+        reason = mx_error->get_text( )
       ).
     ENDIF.
   ENDMETHOD.
@@ -189,13 +290,21 @@ CLASS zcl_gql_server IMPLEMENTATION.
     mo_server = server.
 
     CASE get_content_type( ).
-      WHEN mc_json.
+      WHEN mc_content_types-application_json.
         CASE get_method( ).
-          WHEN mc_method_get.
+          WHEN mc_methods-get.
             handle_get( ).
-          WHEN mc_method_post.
-            handle_post( ).
+          WHEN mc_methods-post.
+            TRY.
+                handle_post( ).
+              CATCH zcx_gql_error.
+            ENDTRY.
           WHEN OTHERS.
+        ENDCASE.
+      WHEN OTHERS.
+        CASE get_method( ).
+          WHEN mc_methods-options.
+            handle_options( ).
         ENDCASE.
     ENDCASE.
 

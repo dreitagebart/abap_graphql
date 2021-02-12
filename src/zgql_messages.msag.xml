@@ -17,6 +17,13 @@
      <STEXT>ABAP GraphQL Messages</STEXT>
     </T100T>
    </T100T>
+   <T100_TEXTS>
+    <item>
+     <SPRSL>E</SPRSL>
+     <MSGNR>000</MSGNR>
+     <TEXT>Field &amp;1 does not exist in JSON</TEXT>
+    </item>
+   </T100_TEXTS>
   </asx:values>
  </asx:abap>
 </abapGit>
