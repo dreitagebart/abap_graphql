@@ -24,8 +24,12 @@ CLASS zcl_gql_server DEFINITION
                END OF mc_content_types,
 
                BEGIN OF mc_operations,
-                 save_schema TYPE string VALUE '/saveSchema',
-                 load_schema TYPE string VALUE '/loadSchema',
+                 search_function TYPE string VALUE '/searchFunction',
+                 search_class    TYPE string VALUE '/searchClass',
+                 import_function TYPE string VALUE '/importFunction',
+                 import_class    TYPE string VALUE '/importClass',
+                 save_schema     TYPE string VALUE '/saveSchema',
+                 load_schema     TYPE string VALUE '/loadSchema',
                END OF mc_operations.
 
   PROTECTED SECTION.
@@ -36,15 +40,17 @@ CLASS zcl_gql_server DEFINITION
 
     DATA: mx_error     TYPE REF TO zcx_gql_error,
           mo_server    TYPE REF TO if_http_server,
+          mo_response  TYPE REF TO object,
           mo_json      TYPE REF TO data,
           mv_operation TYPE string,
           mv_query     TYPE string,
-          mv_variables TYPE string,
-          mv_response  TYPE string.
+          mv_variables TYPE string.
 
     METHODS:
       allow_cors,
       assert_operation
+        RETURNING VALUE(rv_result) TYPE string,
+      get_endpoint
         RETURNING VALUE(rv_result) TYPE string,
       get_operation_value
         RETURNING VALUE(rv_result) TYPE string,
@@ -71,37 +77,171 @@ CLASS zcl_gql_server DEFINITION
       load_schema,
       read_graphql_data
         RAISING zcx_gql_error,
-      save_schema.
+      import_function,
+      import_class,
+      save_schema,
+      search_class,
+      search_function.
 ENDCLASS.
 
 
 
 CLASS zcl_gql_server IMPLEMENTATION.
   METHOD load_schema.
-    SELECT SINGLE data FROM zgql_schema INTO @DATA(lv_data) WHERE schema_name = 'DEFAULT'.
-    IF sy-subrc = 0.
-      mv_response = lv_data.
+    DATA(lv_endpoint) = get_endpoint( ).
+
+    SELECT schema_type, data FROM zgql_schema INTO TABLE @DATA(lt_schema) WHERE endpoint = @lv_endpoint.
+
+    LOOP AT lt_schema REFERENCE INTO DATA(lr_schema).
+      CASE lr_schema->schema_type.
+        WHEN 'O'.
+          DATA(lv_object) = lr_schema->data.
+        WHEN 'Q'.
+          DATA(lv_query) = lr_schema->data.
+        WHEN 'M'.
+          DATA(lv_mutation) = lr_schema->data.
+      ENDCASE.
+    ENDLOOP.
+
+    mo_response = NEW zcl_gql_response_schema(
+      iv_object   = lv_object
+      iv_query    = lv_query
+      iv_mutation = lv_mutation
+    ).
+  ENDMETHOD.
+
+  METHOD import_function.
+    TRY.
+        DATA(lv_object) = get_json_field( 'OBJECT' ).
+      CATCH zcx_gql_error INTO mx_error.
+    ENDTRY.
+
+    SELECT SINGLE funcname FROM tfdir INTO @DATA(lv_function) WHERE funcname = @lv_object.
+    IF sy-subrc <> 0.
+      RETURN.
     ENDIF.
+
+
+  ENDMETHOD.
+
+  METHOD import_class.
+    TRY.
+        DATA(lv_object) = get_json_field( 'OBJECT' ).
+      CATCH zcx_gql_error.
+    ENDTRY.
+
+    SELECT SINGLE clsname FROM seoclass INTO @DATA(lv_class) WHERE clsname = @lv_object.
+    IF sy-subrc <> 0.
+      RETURN.
+    ENDIF.
+
+    DATA(lo_class) = CAST cl_abap_classdescr( cl_abap_classdescr=>describe_by_name( lv_class ) ).
+
+
+
+    LOOP AT lo_class->methods REFERENCE INTO DATA(lr_meth).
+
+    ENDLOOP.
+  ENDMETHOD.
+
+  METHOD search_class.
+    DATA lt_objects TYPE zcl_gql_response_search_object=>tt_object.
+
+    TRY.
+        DATA(lv_search) = get_json_field( 'SEARCH' ).
+
+        IF lv_search IS INITIAL.
+          mo_response = NEW zcl_gql_response_search_object( lt_objects ).
+          RETURN.
+        ENDIF.
+      CATCH zcx_gql_error INTO mx_error.
+    ENDTRY.
+
+    TRANSLATE lv_search TO UPPER CASE.
+
+    DATA lt_search TYPE RANGE OF seoclsname.
+
+    APPEND VALUE #( sign   = 'I'
+                    option = 'CP'
+                    low    = |*| && lv_search && |*| ) TO lt_search.
+
+    SELECT name, description FROM seo_clif_view
+      INTO TABLE @lt_objects UP TO 50 ROWS
+      WHERE name IN @lt_search.
+
+    mo_response = NEW zcl_gql_response_search_object( lt_objects ).
+  ENDMETHOD.
+
+  METHOD search_function.
+    DATA lt_objects TYPE zcl_gql_response_search_object=>tt_object.
+
+    TRY.
+        DATA(lv_search) = get_json_field( 'SEARCH' ).
+
+        IF lv_search IS INITIAL.
+          mo_response = NEW zcl_gql_response_search_object( lt_objects ).
+          RETURN.
+        ENDIF.
+      CATCH zcx_gql_error INTO mx_error.
+    ENDTRY.
+
+    TRANSLATE lv_search TO UPPER CASE.
+
+    DATA lt_search TYPE RANGE OF rs38l_fnam.
+
+    APPEND VALUE #( sign   = 'I'
+                    option = 'CP'
+                    low    = |*| && lv_search && |*| ) TO lt_search.
+
+    SELECT tfdir~funcname, tftit~stext FROM tfdir
+      LEFT OUTER JOIN tftit ON tfdir~funcname = tftit~funcname
+                           AND tftit~spras = @sy-langu
+      UP TO 50 ROWS
+      INTO TABLE @lt_objects WHERE tfdir~funcname IN @lt_search.
+
+    mo_response = NEW zcl_gql_response_search_object( lt_objects ).
   ENDMETHOD.
 
   METHOD save_schema.
-    DATA ls_db TYPE zgql_schema.
+    DATA: lv_component TYPE string,
+          lt_db        TYPE TABLE OF zgql_schema.
 
     FIELD-SYMBOLS: <schema> TYPE REF TO data.
 
+    DATA(lv_endpoint) = get_endpoint( ).
+
     ASSIGN mo_json->* TO FIELD-SYMBOL(<json>).
 
-    ASSIGN COMPONENT 'SCHEMA' OF STRUCTURE <json> TO <schema>.
+    DO.
+      CASE sy-index.
+        WHEN 1.
+          lv_component = 'OBJECT'.
+        WHEN 2.
+          lv_component = 'QUERY'.
+        WHEN 3.
+          lv_component = 'MUTATION'.
+        WHEN OTHERS.
+          EXIT.
+      ENDCASE.
 
-    ASSIGN <schema>->* TO FIELD-SYMBOL(<data>).
+      ASSIGN COMPONENT lv_component OF STRUCTURE <json> TO <schema>.
 
-    ls_db-client      = sy-mandt.
-    ls_db-schema_name = 'DEFAULT'.
-    ls_db-data        = <data>.
+      ASSIGN <schema>->* TO FIELD-SYMBOL(<data>).
 
-    MODIFY zgql_schema FROM ls_db.
+      APPEND INITIAL LINE TO lt_db REFERENCE INTO DATA(lr_db).
+      lr_db->client      = sy-mandt.
+      lr_db->endpoint    = lv_endpoint.
+      lr_db->schema_type = lv_component(1).
+      lr_db->data        = <data>.
+
+      IF <schema> IS ASSIGNED.
+        UNASSIGN <schema>.
+      ENDIF.
+    ENDDO.
+
+    MODIFY zgql_schema FROM TABLE lt_db.
     IF sy-subrc = 0.
-      mv_response = 'SUCCESS'.
+      mo_response = NEW zcl_gql_response_200( 'SUCCESS' ).
     ENDIF.
   ENDMETHOD.
 
@@ -128,6 +268,10 @@ CLASS zcl_gql_server IMPLEMENTATION.
     mv_operation = mo_server->request->get_header_field( '~path_info' ).
 
     CASE mv_operation.
+      WHEN mc_operations-import_class.
+      WHEN mc_operations-import_function.
+      WHEN mc_operations-search_class.
+      WHEN mc_operations-search_function.
       WHEN mc_operations-load_schema.
       WHEN mc_operations-save_schema.
       WHEN OTHERS.
@@ -204,6 +348,14 @@ CLASS zcl_gql_server IMPLEMENTATION.
 
   METHOD handle_operation.
     CASE mv_operation.
+      WHEN mc_operations-import_class.
+        import_class( ).
+      WHEN mc_operations-import_function.
+        import_function( ).
+      WHEN mc_operations-search_class.
+        search_class( ).
+      WHEN mc_operations-search_function.
+        search_function( ).
       WHEN mc_operations-save_schema.
         save_schema( ).
       WHEN mc_operations-load_schema.
@@ -212,7 +364,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_options.
-    mv_response = 'Ok'.
+    mo_response = NEW zcl_gql_response_200( 'OK' ).
   ENDMETHOD.
 
   METHOD handle_get.
@@ -224,6 +376,17 @@ CLASS zcl_gql_server IMPLEMENTATION.
                 json        = mo_server->request->get_cdata( )
                 pretty_name = /ui2/cl_json=>pretty_mode-camel_case
               ).
+  ENDMETHOD.
+
+  METHOD get_endpoint.
+*    DATA lt_header TYPE tihttpnvp.
+*
+*    mo_server->request->get_header_fields(
+*      CHANGING
+*        fields = lt_header                 " Header fields
+*    ).
+
+    rv_result = mo_server->request->get_header_field( name = '~script_name' ).
   ENDMETHOD.
 
   METHOD get_query_string.
@@ -267,7 +430,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
       mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
 
       mo_server->response->set_cdata( /ui2/cl_json=>serialize(
-                                        data             = VALUE ts_response( data = mv_response )
+                                        data             = mo_response
                                         pretty_name      = /ui2/cl_json=>pretty_mode-camel_case
 *                                       type_descr       =
 *                                       assoc_arrays     =
