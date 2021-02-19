@@ -1,4 +1,4 @@
-CLASS zcl_gql_schema_field DEFINITION
+CLASS zcl_gql_schema_result DEFINITION
   PUBLIC
   FINAL
   CREATE PUBLIC GLOBAL FRIENDS zcl_gql_schema_generator.
@@ -12,10 +12,14 @@ CLASS zcl_gql_schema_field DEFINITION
       boolean,
       float,
       int,
+      object
+        IMPORTING
+                  io_object        TYPE REF TO zcl_gql_schema_object
+        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_result,
       required
-        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_field,
+        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_result,
       list
-        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_field.
+        RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_result.
 
   PROTECTED SECTION.
 
@@ -23,12 +27,19 @@ CLASS zcl_gql_schema_field DEFINITION
     DATA: mv_name     TYPE string,
           mv_list     TYPE abap_bool,
           mv_required TYPE abap_bool,
-          mv_type     TYPE c LENGTH 1.
+          mv_complex  TYPE abap_bool,
+          mv_type     TYPE c LENGTH 1,
+          mo_object   TYPE REF TO zcl_gql_schema_object.
 ENDCLASS.
 
 
 
-CLASS zcl_gql_schema_field IMPLEMENTATION.
+CLASS zcl_gql_schema_result IMPLEMENTATION.
+  METHOD object.
+    mv_complex = abap_true.
+    mo_object = io_object.
+  ENDMETHOD.
+
   METHOD required.
     mv_required = abap_true.
 
@@ -47,18 +58,22 @@ CLASS zcl_gql_schema_field IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD string.
+    mv_complex = abap_false.
     mv_type = zif_gql_schema=>mc_types-string.
   ENDMETHOD.
 
   METHOD boolean.
+    mv_complex = abap_false.
     mv_type = zif_gql_schema=>mc_types-boolean.
   ENDMETHOD.
 
   METHOD float.
+    mv_complex = abap_false.
     mv_type = zif_gql_schema=>mc_types-float.
   ENDMETHOD.
 
   METHOD int.
+    mv_complex = abap_false.
     mv_type = zif_gql_schema=>mc_types-int.
   ENDMETHOD.
 ENDCLASS.

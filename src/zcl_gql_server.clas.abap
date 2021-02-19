@@ -39,6 +39,8 @@ CLASS zcl_gql_server DEFINITION
            END OF ts_response.
 
     DATA: mx_error     TYPE REF TO zcx_gql_error,
+          mo_class     TYPE REF TO cl_abap_classdescr,
+          mo_schema    TYPE REF TO zcl_gql_schema_generator,
           mo_server    TYPE REF TO if_http_server,
           mo_response  TYPE REF TO object,
           mo_json      TYPE REF TO data,
@@ -77,8 +79,23 @@ CLASS zcl_gql_server DEFINITION
       load_schema,
       read_graphql_data
         RAISING zcx_gql_error,
-      import_function,
-      import_class,
+      import_function
+        RAISING zcx_gql_error,
+      import_class
+        RAISING zcx_gql_error,
+      set_input_type
+        IMPORTING
+                  iv_name  TYPE abap_compname
+                  iv_type  TYPE abap_typekind
+                  io_field TYPE REF TO zcl_gql_schema_field
+        RAISING   zcx_gql_error,
+      set_result_type
+        IMPORTING
+                  iv_method TYPE abap_methname
+                  iv_name   TYPE abap_compname
+                  iv_type   TYPE abap_typekind
+                  io_result TYPE REF TO zcl_gql_schema_result
+        RAISING   zcx_gql_error,
       save_schema,
       search_class,
       search_function.
@@ -116,32 +133,279 @@ CLASS zcl_gql_server IMPLEMENTATION.
       CATCH zcx_gql_error INTO mx_error.
     ENDTRY.
 
+    TRANSLATE lv_object TO UPPER CASE.
+
     SELECT SINGLE funcname FROM tfdir INTO @DATA(lv_function) WHERE funcname = @lv_object.
     IF sy-subrc <> 0.
+      RAISE EXCEPTION TYPE zcx_gql_error
+        MESSAGE e001 WITH lv_object.
       RETURN.
     ENDIF.
-
-
   ENDMETHOD.
 
   METHOD import_class.
     TRY.
-        DATA(lv_object) = get_json_field( 'OBJECT' ).
-      CATCH zcx_gql_error.
+        DATA(lv_class) = get_json_field( 'OBJECT' ).
+      CATCH zcx_gql_error INTO mx_error.
+        RETURN.
     ENDTRY.
 
-    SELECT SINGLE clsname FROM seoclass INTO @DATA(lv_class) WHERE clsname = @lv_object.
+    TRANSLATE lv_class TO UPPER CASE.
+
+    SELECT SINGLE clsname FROM seoclass INTO @DATA(lv_classname) WHERE clsname = @lv_class.
     IF sy-subrc <> 0.
-      RETURN.
+      RAISE EXCEPTION TYPE zcx_gql_error
+        MESSAGE e002 WITH lv_class.
     ENDIF.
 
-    DATA(lo_class) = CAST cl_abap_classdescr( cl_abap_classdescr=>describe_by_name( lv_class ) ).
+    mo_class = CAST cl_abap_classdescr( cl_abap_classdescr=>describe_by_name( lv_class ) ).
 
+    TRY.
+        DATA(lr_target) = REF #( mo_class->interfaces[ name = 'ZIF_GQL_RESOLVER' ] ).
+      CATCH cx_sy_itab_line_not_found.
+        RAISE EXCEPTION TYPE zcx_gql_error
+          MESSAGE e003 WITH 'ZIF_GQL_RESOLVER'.
+    ENDTRY.
 
+    DATA lif_instance TYPE REF TO zif_gql_resolver.
 
-    LOOP AT lo_class->methods REFERENCE INTO DATA(lr_meth).
+    CREATE OBJECT lif_instance TYPE (lv_class).
 
+    DATA(lv_name) = lif_instance->get_name( ).
+
+    mo_schema = NEW zcl_gql_schema_generator( ).
+
+    LOOP AT lif_instance->get_methods( ) REFERENCE INTO DATA(lr_method).
+      TRY.
+          DATA(lr_meth) = REF #( mo_class->methods[ name = lr_method->name ] ).
+
+          CASE lr_method->type.
+            WHEN zif_gql_resolver=>mc_types-query.
+              DATA(lo_query) = mo_schema->query( lr_method->name ).
+
+              LOOP AT lr_meth->parameters REFERENCE INTO DATA(lr_param) WHERE parm_kind = cl_abap_classdescr=>importing.
+                DATA(lo_field) = lo_query->field( CONV #( lr_param->name ) ).
+
+                IF lr_param->is_optional = abap_false.
+                  lo_field->required( ).
+                ENDIF.
+
+                TRY.
+                    set_input_type(
+                      iv_name = lr_param->name
+                      iv_type = lr_param->type_kind
+                      io_field = lo_field
+                    ).
+                  CATCH zcx_gql_error INTO mx_error.
+                    RETURN.
+                ENDTRY.
+              ENDLOOP.
+
+              LOOP AT lr_meth->parameters REFERENCE INTO lr_param WHERE parm_kind = cl_abap_classdescr=>returning.
+                DATA(lo_result) = lo_query->result( CONV #( lr_param->name ) ).
+
+                TRY.
+                    set_result_type(
+                      iv_method = lr_meth->name
+                      iv_name   = lr_param->name
+                      iv_type   = lr_param->type_kind
+                      io_result = lo_result
+                    ).
+                  CATCH zcx_gql_error INTO mx_error.
+                    RETURN.
+                ENDTRY.
+              ENDLOOP.
+            WHEN zif_gql_resolver=>mc_types-mutation.
+              DATA(lo_mutation) = mo_schema->mutation( lr_method->name ).
+
+              LOOP AT lr_meth->parameters REFERENCE INTO lr_param WHERE parm_kind = cl_abap_classdescr=>importing.
+                lo_field = lo_mutation->field( CONV #( lr_param->name ) ).
+
+                IF lr_param->is_optional = abap_false.
+                  lo_field->required( ).
+                ENDIF.
+
+                TRY.
+                    set_input_type(
+                      iv_name = lr_param->name
+                      iv_type = lr_param->type_kind
+                      io_field = lo_field
+                    ).
+                  CATCH zcx_gql_error INTO mx_error.
+                    RETURN.
+                ENDTRY.
+              ENDLOOP.
+
+              LOOP AT lr_meth->parameters REFERENCE INTO lr_param WHERE parm_kind = cl_abap_classdescr=>returning.
+                lo_result = lo_mutation->result( CONV #( lr_param->name ) ).
+
+                TRY.
+                    set_result_type(
+                      iv_method = lr_meth->name
+                      iv_name   = lr_param->name
+                      iv_type   = lr_param->type_kind
+                      io_result = lo_result
+                    ).
+                  CATCH zcx_gql_error INTO mx_error.
+                    RETURN.
+                ENDTRY.
+              ENDLOOP.
+          ENDCASE.
+        CATCH cx_sy_itab_line_not_found.
+      ENDTRY.
     ENDLOOP.
+
+    TRY.
+        mo_schema->generate(
+          IMPORTING
+            ev_object   = DATA(lv_object)
+            ev_query    = DATA(lv_query)
+            ev_mutation = DATA(lv_mutation)
+        ).
+      CATCH zcx_gql_error INTO mx_error.
+        RETURN.
+    ENDTRY.
+
+    mo_response = NEW zcl_gql_response_schema(
+                    iv_object   = lv_object
+                    iv_query    = lv_query
+                    iv_mutation = lv_mutation
+                  ).
+  ENDMETHOD.
+
+  METHOD set_result_type.
+    CASE iv_type.
+      WHEN cl_abap_classdescr=>typekind_int.
+        io_result->int( ).
+      WHEN cl_abap_classdescr=>typekind_int1.
+        io_result->int( ).
+      WHEN cl_abap_classdescr=>typekind_int2.
+        io_result->int( ).
+      WHEN cl_abap_classdescr=>typekind_int8.
+        io_result->int( ).
+      WHEN cl_abap_classdescr=>typekind_char.
+        io_result->string( ).
+      WHEN cl_abap_classdescr=>typekind_clike.
+        io_result->string( ).
+      WHEN cl_abap_classdescr=>typekind_csequence.
+        io_result->string( ).
+      WHEN cl_abap_classdescr=>typekind_decfloat.
+        io_result->float( ).
+      WHEN cl_abap_classdescr=>typekind_decfloat16.
+        io_result->float( ).
+      WHEN cl_abap_classdescr=>typekind_decfloat34.
+        io_result->float( ).
+      WHEN cl_abap_classdescr=>typekind_float.
+        io_result->float( ).
+      WHEN cl_abap_classdescr=>typekind_struct1.
+        DATA(lo_object) = mo_schema->object( iv_method && |_| && iv_name ).
+
+        DATA(lo_struc) = CAST cl_abap_structdescr( mo_class->get_method_parameter_type(
+                                                     p_method_name       = iv_method
+                                                     p_parameter_name    = iv_name
+                                                 ) ).
+
+        LOOP AT lo_struc->components REFERENCE INTO DATA(lr_component).
+          DATA(lo_field) = lo_object->field( CONV #( lr_component->name ) ).
+
+          TRY.
+              set_input_type(
+                iv_name  = lr_component->name
+                iv_type  = lr_component->type_kind
+                io_field = lo_field
+              ).
+            CATCH zcx_gql_error INTO mx_error.
+              RETURN.
+          ENDTRY.
+        ENDLOOP.
+
+        io_result->object( lo_object ).
+      WHEN cl_abap_classdescr=>typekind_struct2.
+        lo_object = mo_schema->object( iv_method && |_| && iv_name ).
+
+        lo_struc = CAST cl_abap_structdescr( mo_class->get_method_parameter_type(
+                                               p_method_name       = iv_method
+                                               p_parameter_name    = iv_name
+                                             ) ).
+
+        LOOP AT lo_struc->components REFERENCE INTO lr_component.
+          lo_field = lo_object->field( CONV #( lr_component->name ) ).
+
+          TRY.
+              set_input_type(
+                iv_name  = lr_component->name
+                iv_type  = lr_component->type_kind
+                io_field = lo_field
+              ).
+            CATCH zcx_gql_error INTO mx_error.
+              RETURN.
+          ENDTRY.
+        ENDLOOP.
+
+        io_result->object( lo_object ).
+      WHEN cl_abap_classdescr=>typekind_table.
+        io_result->list( ).
+
+        lo_object = mo_schema->object( iv_method && |_| && iv_name ).
+
+        DATA(lo_table) = CAST cl_abap_tabledescr( mo_class->get_method_parameter_type(
+                                                    p_method_name    = iv_method
+                                                    p_parameter_name = iv_name
+                                                  ) ).
+
+        lo_struc = CAST cl_abap_structdescr( lo_table->get_table_line_type( ) ).
+
+        LOOP AT lo_struc->components REFERENCE INTO lr_component.
+          lo_field = lo_object->field( CONV #( lr_component->name ) ).
+
+          TRY.
+              set_input_type(
+                iv_name  = lr_component->name
+                iv_type  = lr_component->type_kind
+                io_field = lo_field
+              ).
+            CATCH zcx_gql_error INTO mx_error.
+              RETURN.
+          ENDTRY.
+        ENDLOOP.
+
+        io_result->object( lo_object ).
+      WHEN OTHERS.
+        RAISE EXCEPTION TYPE zcx_gql_error
+          MESSAGE e004 WITH iv_name.
+    ENDCASE.
+
+    io_result->required( ).
+  ENDMETHOD.
+
+  METHOD set_input_type.
+    CASE iv_type.
+      WHEN cl_abap_classdescr=>typekind_int.
+        io_field->int( ).
+      WHEN cl_abap_classdescr=>typekind_int1.
+        io_field->int( ).
+      WHEN cl_abap_classdescr=>typekind_int2.
+        io_field->int( ).
+      WHEN cl_abap_classdescr=>typekind_int8.
+        io_field->int( ).
+      WHEN cl_abap_classdescr=>typekind_char.
+        io_field->string( ).
+      WHEN cl_abap_classdescr=>typekind_clike.
+        io_field->string( ).
+      WHEN cl_abap_classdescr=>typekind_csequence.
+        io_field->string( ).
+      WHEN cl_abap_classdescr=>typekind_decfloat.
+        io_field->float( ).
+      WHEN cl_abap_classdescr=>typekind_decfloat16.
+        io_field->float( ).
+      WHEN cl_abap_classdescr=>typekind_decfloat34.
+        io_field->float( ).
+      WHEN cl_abap_classdescr=>typekind_float.
+        io_field->float( ).
+      WHEN OTHERS.
+        RAISE EXCEPTION TYPE zcx_gql_error
+          MESSAGE e004 WITH iv_name.
+    ENDCASE.
   ENDMETHOD.
 
   METHOD search_class.
@@ -165,9 +429,10 @@ CLASS zcl_gql_server IMPLEMENTATION.
                     option = 'CP'
                     low    = |*| && lv_search && |*| ) TO lt_search.
 
-    SELECT name, description FROM seo_clif_view
+    SELECT clsname, descript FROM vseoclass
       INTO TABLE @lt_objects UP TO 50 ROWS
-      WHERE name IN @lt_search.
+      WHERE clsname IN @lt_search
+        AND langu = @sy-langu.
 
     mo_response = NEW zcl_gql_response_search_object( lt_objects ).
   ENDMETHOD.
@@ -349,9 +614,15 @@ CLASS zcl_gql_server IMPLEMENTATION.
   METHOD handle_operation.
     CASE mv_operation.
       WHEN mc_operations-import_class.
-        import_class( ).
+        TRY.
+            import_class( ).
+          CATCH zcx_gql_error INTO mx_error.
+        ENDTRY.
       WHEN mc_operations-import_function.
-        import_function( ).
+        TRY.
+            import_function( ).
+          CATCH zcx_gql_error INTO mx_error.
+        ENDTRY.
       WHEN mc_operations-search_class.
         search_class( ).
       WHEN mc_operations-search_function.
@@ -419,9 +690,9 @@ CLASS zcl_gql_server IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_response.
-    IF mx_error IS NOT BOUND.
-      allow_cors( ).
+    allow_cors( ).
 
+    IF mx_error IS NOT BOUND.
       mo_server->response->set_status(
         code   = cl_rest_status_code=>gc_success_ok
         reason = 'OK'
@@ -432,20 +703,19 @@ CLASS zcl_gql_server IMPLEMENTATION.
       mo_server->response->set_cdata( /ui2/cl_json=>serialize(
                                         data             = mo_response
                                         pretty_name      = /ui2/cl_json=>pretty_mode-camel_case
-*                                       type_descr       =
-*                                       assoc_arrays     =
-*                                       ts_as_iso8601    =
-*                                       expand_includes  =
-*                                       assoc_arrays_opt =
-*                                       numc_as_string   =
-*                                       name_mappings    =
-*                                       conversion_exits =
                                       ) ).
     ELSE.
       mo_server->response->set_status(
         code   = cl_rest_status_code=>gc_client_error_bad_request
         reason = mx_error->get_text( )
       ).
+
+      mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
+
+      mo_server->response->set_cdata( /ui2/cl_json=>serialize(
+                                        data = NEW zcl_gql_response_400( mx_error->get_text( ) )
+                                        pretty_name = /ui2/cl_json=>pretty_mode-camel_case
+                                      ) ).
     ENDIF.
   ENDMETHOD.
 

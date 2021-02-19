@@ -1,15 +1,9 @@
 CLASS zcl_gql_schema_object DEFINITION
   PUBLIC
   FINAL
-  CREATE PUBLIC.
+  CREATE PUBLIC GLOBAL FRIENDS zcl_gql_schema_generator.
 
   PUBLIC SECTION.
-    TYPES: BEGIN OF ts_field,
-             instance TYPE REF TO zcl_gql_schema_field,
-           END OF ts_field,
-
-           tt_field TYPE TABLE OF ts_field WITH DEFAULT KEY.
-
     METHODS:
       constructor
         IMPORTING
@@ -23,7 +17,7 @@ CLASS zcl_gql_schema_object DEFINITION
 
   PRIVATE SECTION.
     DATA: mv_name   TYPE string,
-          mt_fields TYPE tt_field.
+          mt_fields TYPE zif_gql_schema=>tt_field.
 
 ENDCLASS.
 
@@ -31,7 +25,10 @@ ENDCLASS.
 
 CLASS zcl_gql_schema_object IMPLEMENTATION.
   METHOD constructor.
-    mv_name = iv_name.
+    mv_name = zcl_gql_schema_generator=>camel_case(
+                iv_name = iv_name
+                iv_capitalized = abap_true
+              ).
   ENDMETHOD.
 
   METHOD field.
