@@ -1,43 +1,30 @@
 INTERFACE zif_gql_schema
   PUBLIC.
 
-  TYPES: BEGIN OF ts_field,
-           instance TYPE REF TO zcl_gql_schema_field,
-         END OF ts_field,
+  TYPES: tr_field     TYPE REF TO zcl_gql_schema_field,
+         tr_type      TYPE REF TO zcl_gql_schema_type,
+         tr_query     TYPE REF TO zcl_gql_schema_query,
+         tr_mutation  TYPE REF TO zcl_gql_schema_mutation,
+         tr_interface TYPE REF TO zcl_gql_schema_interface,
+         tr_input     TYPE REF TO zcl_gql_schema_input,
+         tr_enum      TYPE REF TO zcl_gql_schema_enum,
 
-         BEGIN OF ts_object,
-           instance TYPE REF TO zcl_gql_schema_object,
-         END OF ts_object,
+         tt_enum      TYPE TABLE OF tr_enum WITH DEFAULT KEY,
+         tt_interface TYPE TABLE OF tr_interface WITH DEFAULT KEY,
+         tt_input     TYPE TABLE OF tr_input WITH DEFAULT KEY,
+         tt_type      TYPE TABLE OF tr_type WITH DEFAULT KEY,
+         tt_query     TYPE TABLE OF tr_query WITH DEFAULT KEY,
+         tt_mutation  TYPE TABLE OF tr_mutation WITH DEFAULT KEY,
+         tt_field     TYPE TABLE OF tr_field WITH DEFAULT KEY.
 
-         BEGIN OF ts_query,
-           instance TYPE REF TO zcl_gql_schema_query,
-         END OF ts_query,
+  CONSTANTS: BEGIN OF mc_basic_types,
+               string  TYPE string VALUE 'String',
+               boolean TYPE string VALUE 'Boolean',
+               int     TYPE string VALUE 'Int',
+               float   TYPE string VALUE 'Float',
+             END OF mc_basic_types,
 
-         BEGIN OF ts_mutation,
-           instance TYPE REF TO zcl_gql_schema_mutation,
-         END OF ts_mutation,
-
-         BEGIN OF ts_interface,
-           instance TYPE REF TO zcl_gql_schema_interface,
-         END OF ts_interface,
-
-         BEGIN OF ts_input,
-           instance TYPE REF TO zcl_gql_schema_input,
-         END OF ts_input,
-
-         BEGIN OF ts_enum,
-           instance TYPE REF TO zcl_gql_schema_enum,
-         END OF ts_enum,
-
-         tt_enum      TYPE TABLE OF ts_enum WITH DEFAULT KEY,
-         tt_interface TYPE TABLE OF ts_interface WITH DEFAULT KEY,
-         tt_input     TYPE TABLE OF ts_input WITH DEFAULT KEY,
-         tt_object    TYPE TABLE OF ts_object WITH DEFAULT KEY,
-         tt_query     TYPE TABLE OF ts_query WITH DEFAULT KEY,
-         tt_mutation  TYPE TABLE OF ts_mutation WITH DEFAULT KEY,
-         tt_field     TYPE TABLE OF ts_field.
-
-  CONSTANTS: BEGIN OF mc_types,
+             BEGIN OF mc_types,
                string  TYPE c LENGTH 1 VALUE 'S',
                boolean TYPE c LENGTH 1 VALUE 'B',
                float   TYPE c LENGTH 1 VALUE 'F',

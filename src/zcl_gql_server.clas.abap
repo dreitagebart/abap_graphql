@@ -38,15 +38,12 @@ CLASS zcl_gql_server DEFINITION
              data TYPE string,
            END OF ts_response.
 
-    DATA: mx_error     TYPE REF TO zcx_gql_error,
-          mo_class     TYPE REF TO cl_abap_classdescr,
+    DATA: mo_class     TYPE REF TO cl_abap_classdescr,
           mo_schema    TYPE REF TO zcl_gql_schema_generator,
           mo_server    TYPE REF TO if_http_server,
-          mo_response  TYPE REF TO object,
           mo_json      TYPE REF TO data,
-          mv_operation TYPE string,
-          mv_query     TYPE string,
-          mv_variables TYPE string.
+          mif_response TYPE REF TO zif_gql_response,
+          mv_operation TYPE string.
 
     METHODS:
       allow_cors,
@@ -62,19 +59,23 @@ CLASS zcl_gql_server DEFINITION
         RETURNING VALUE(rv_result) TYPE string,
       get_content_type
         RETURNING VALUE(rv_result) TYPE string,
+      get_json_field_ref
+        IMPORTING
+                  iv_field         TYPE string
+        RETURNING VALUE(rr_result) TYPE REF TO data
+        RAISING   zcx_gql_error,
       get_json_field
         IMPORTING
                   iv_field         TYPE string
         RETURNING VALUE(rv_result) TYPE string
         RAISING   zcx_gql_error,
-      handle_graphql
-        RAISING zcx_gql_error,
+      handle_graphql,
       handle_operation,
       handle_options,
       handle_get,
-      handle_post
-        RAISING zcx_gql_error,
+      handle_post,
       handle_response,
+      handle_request,
       read_json,
       load_schema,
       read_graphql_data
@@ -107,21 +108,43 @@ CLASS zcl_gql_server IMPLEMENTATION.
   METHOD load_schema.
     DATA(lv_endpoint) = get_endpoint( ).
 
-    SELECT schema_type, data FROM zgql_schema INTO TABLE @DATA(lt_schema) WHERE endpoint = @lv_endpoint.
+    SELECT schema_type,
+           type_name,
+           data FROM zgql_schema INTO TABLE @DATA(lt_schema) WHERE endpoint = @lv_endpoint.
+
+    DATA(lo_generator) = NEW zcl_gql_schema_generator( ).
 
     LOOP AT lt_schema REFERENCE INTO DATA(lr_schema).
       CASE lr_schema->schema_type.
-        WHEN 'O'.
-          DATA(lv_object) = lr_schema->data.
+        WHEN 'T'.
+          DATA(lo_type) = CAST zcl_gql_schema_type( zcl_gql_schema_utils=>deserialize( zcl_gql_schema_utils=>uncompress( lr_schema->data ) ) ).
+
+          lo_generator->add_type( lo_type ).
         WHEN 'Q'.
-          DATA(lv_query) = lr_schema->data.
+          DATA(lo_query) = CAST zcl_gql_schema_query( zcl_gql_schema_utils=>deserialize( zcl_gql_schema_utils=>uncompress( lr_schema->data ) ) ).
+
+          lo_generator->add_query( lo_query ).
         WHEN 'M'.
-          DATA(lv_mutation) = lr_schema->data.
+          DATA(lo_mutation) = CAST zcl_gql_schema_mutation( zcl_gql_schema_utils=>deserialize( zcl_gql_schema_utils=>uncompress( lr_schema->data ) ) ).
+
+          lo_generator->add_mutation( lo_mutation ).
       ENDCASE.
     ENDLOOP.
 
-    mo_response = NEW zcl_gql_response_schema(
-      iv_object   = lv_object
+    TRY.
+        lo_generator->generate(
+          IMPORTING
+            ev_types    = DATA(lv_types)
+            ev_query    = DATA(lv_query)
+            ev_mutation = DATA(lv_mutation)
+        ).
+      CATCH zcx_gql_error INTO DATA(lx_error).
+        mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
+        RETURN.
+    ENDTRY.
+
+    mif_response = NEW zcl_gql_response_schema_sdl(
+      iv_types    = lv_types
       iv_query    = lv_query
       iv_mutation = lv_mutation
     ).
@@ -130,7 +153,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
   METHOD import_function.
     TRY.
         DATA(lv_object) = get_json_field( 'OBJECT' ).
-      CATCH zcx_gql_error INTO mx_error.
+      CATCH zcx_gql_error INTO DATA(lx_error).
     ENDTRY.
 
     TRANSLATE lv_object TO UPPER CASE.
@@ -146,7 +169,8 @@ CLASS zcl_gql_server IMPLEMENTATION.
   METHOD import_class.
     TRY.
         DATA(lv_class) = get_json_field( 'OBJECT' ).
-      CATCH zcx_gql_error INTO mx_error.
+      CATCH zcx_gql_error INTO DATA(lx_error).
+        mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
         RETURN.
     ENDTRY.
 
@@ -181,10 +205,12 @@ CLASS zcl_gql_server IMPLEMENTATION.
 
           CASE lr_method->type.
             WHEN zif_gql_resolver=>mc_types-query.
-              DATA(lo_query) = mo_schema->query( lr_method->name ).
+              DATA(lo_query) = mo_schema->query( zcl_gql_schema_utils=>camel_case( lr_method->name ) ).
+
+              lo_query->directive( lv_class ).
 
               LOOP AT lr_meth->parameters REFERENCE INTO DATA(lr_param) WHERE parm_kind = cl_abap_classdescr=>importing.
-                DATA(lo_field) = lo_query->field( CONV #( lr_param->name ) ).
+                DATA(lo_field) = lo_query->field( zcl_gql_schema_utils=>camel_case( CONV #( lr_param->name ) ) ).
 
                 IF lr_param->is_optional = abap_false.
                   lo_field->required( ).
@@ -192,17 +218,17 @@ CLASS zcl_gql_server IMPLEMENTATION.
 
                 TRY.
                     set_input_type(
-                      iv_name = lr_param->name
-                      iv_type = lr_param->type_kind
+                      iv_name  = lr_param->name
+                      iv_type  = lr_param->type_kind
                       io_field = lo_field
                     ).
-                  CATCH zcx_gql_error INTO mx_error.
-                    RETURN.
+                  CATCH zcx_gql_error INTO lx_error.
+                    RAISE EXCEPTION lx_error.
                 ENDTRY.
               ENDLOOP.
 
               LOOP AT lr_meth->parameters REFERENCE INTO lr_param WHERE parm_kind = cl_abap_classdescr=>returning.
-                DATA(lo_result) = lo_query->result( CONV #( lr_param->name ) ).
+                DATA(lo_result) = lo_query->result( zcl_gql_schema_utils=>upper_camel_case( CONV #( lr_param->name ) ) ).
 
                 TRY.
                     set_result_type(
@@ -211,15 +237,18 @@ CLASS zcl_gql_server IMPLEMENTATION.
                       iv_type   = lr_param->type_kind
                       io_result = lo_result
                     ).
-                  CATCH zcx_gql_error INTO mx_error.
+                  CATCH zcx_gql_error INTO lx_error.
+                    mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
                     RETURN.
                 ENDTRY.
               ENDLOOP.
             WHEN zif_gql_resolver=>mc_types-mutation.
-              DATA(lo_mutation) = mo_schema->mutation( lr_method->name ).
+              DATA(lo_mutation) = mo_schema->mutation( zcl_gql_schema_utils=>camel_case( lr_method->name ) ).
+
+              lo_mutation->directive( lv_class ).
 
               LOOP AT lr_meth->parameters REFERENCE INTO lr_param WHERE parm_kind = cl_abap_classdescr=>importing.
-                lo_field = lo_mutation->field( CONV #( lr_param->name ) ).
+                lo_field = lo_mutation->field( zcl_gql_schema_utils=>camel_case( CONV #( lr_param->name ) ) ).
 
                 IF lr_param->is_optional = abap_false.
                   lo_field->required( ).
@@ -231,13 +260,14 @@ CLASS zcl_gql_server IMPLEMENTATION.
                       iv_type = lr_param->type_kind
                       io_field = lo_field
                     ).
-                  CATCH zcx_gql_error INTO mx_error.
+                  CATCH zcx_gql_error INTO lx_error.
+                    mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
                     RETURN.
                 ENDTRY.
               ENDLOOP.
 
               LOOP AT lr_meth->parameters REFERENCE INTO lr_param WHERE parm_kind = cl_abap_classdescr=>returning.
-                lo_result = lo_mutation->result( CONV #( lr_param->name ) ).
+                lo_result = lo_mutation->result( zcl_gql_schema_utils=>upper_camel_case( CONV #( lr_param->name ) ) ).
 
                 TRY.
                     set_result_type(
@@ -246,7 +276,8 @@ CLASS zcl_gql_server IMPLEMENTATION.
                       iv_type   = lr_param->type_kind
                       io_result = lo_result
                     ).
-                  CATCH zcx_gql_error INTO mx_error.
+                  CATCH zcx_gql_error INTO lx_error.
+                    mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
                     RETURN.
                 ENDTRY.
               ENDLOOP.
@@ -258,22 +289,25 @@ CLASS zcl_gql_server IMPLEMENTATION.
     TRY.
         mo_schema->generate(
           IMPORTING
-            ev_object   = DATA(lv_object)
+            ev_types   = DATA(lv_types)
             ev_query    = DATA(lv_query)
             ev_mutation = DATA(lv_mutation)
         ).
-      CATCH zcx_gql_error INTO mx_error.
+      CATCH zcx_gql_error INTO lx_error.
+        mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
         RETURN.
     ENDTRY.
 
-    mo_response = NEW zcl_gql_response_schema(
-                    iv_object   = lv_object
-                    iv_query    = lv_query
-                    iv_mutation = lv_mutation
-                  ).
+    mif_response = NEW zcl_gql_response_schema_sdl(
+                     iv_types    = lv_types
+                     iv_query    = lv_query
+                     iv_mutation = lv_mutation
+                   ).
   ENDMETHOD.
 
   METHOD set_result_type.
+    DATA lv_type_name TYPE string.
+
     CASE iv_type.
       WHEN cl_abap_classdescr=>typekind_int.
         io_result->int( ).
@@ -298,7 +332,8 @@ CLASS zcl_gql_server IMPLEMENTATION.
       WHEN cl_abap_classdescr=>typekind_float.
         io_result->float( ).
       WHEN cl_abap_classdescr=>typekind_struct1.
-        DATA(lo_object) = mo_schema->object( iv_method && |_| && iv_name ).
+        lv_type_name = zcl_gql_schema_utils=>upper_camel_case( iv_method && |_| && iv_name ).
+        DATA(lo_type) = mo_schema->type( lv_type_name ).
 
         DATA(lo_struc) = CAST cl_abap_structdescr( mo_class->get_method_parameter_type(
                                                      p_method_name       = iv_method
@@ -306,7 +341,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
                                                  ) ).
 
         LOOP AT lo_struc->components REFERENCE INTO DATA(lr_component).
-          DATA(lo_field) = lo_object->field( CONV #( lr_component->name ) ).
+          DATA(lo_field) = lo_type->field( zcl_gql_schema_utils=>camel_case( CONV #( lr_component->name ) ) ).
 
           TRY.
               set_input_type(
@@ -314,14 +349,17 @@ CLASS zcl_gql_server IMPLEMENTATION.
                 iv_type  = lr_component->type_kind
                 io_field = lo_field
               ).
-            CATCH zcx_gql_error INTO mx_error.
+            CATCH zcx_gql_error INTO DATA(lx_error).
+              mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
               RETURN.
           ENDTRY.
         ENDLOOP.
 
-        io_result->object( lo_object ).
+        io_result->type( lv_type_name ).
       WHEN cl_abap_classdescr=>typekind_struct2.
-        lo_object = mo_schema->object( iv_method && |_| && iv_name ).
+        lv_type_name = zcl_gql_schema_utils=>upper_camel_case( iv_method && |_| && iv_name ).
+
+        lo_type = mo_schema->type( lv_type_name ).
 
         lo_struc = CAST cl_abap_structdescr( mo_class->get_method_parameter_type(
                                                p_method_name       = iv_method
@@ -329,7 +367,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
                                              ) ).
 
         LOOP AT lo_struc->components REFERENCE INTO lr_component.
-          lo_field = lo_object->field( CONV #( lr_component->name ) ).
+          lo_field = lo_type->field( zcl_gql_schema_utils=>camel_case( CONV #( lr_component->name ) ) ).
 
           TRY.
               set_input_type(
@@ -337,16 +375,19 @@ CLASS zcl_gql_server IMPLEMENTATION.
                 iv_type  = lr_component->type_kind
                 io_field = lo_field
               ).
-            CATCH zcx_gql_error INTO mx_error.
+            CATCH zcx_gql_error INTO lx_error.
+              mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
               RETURN.
           ENDTRY.
         ENDLOOP.
 
-        io_result->object( lo_object ).
+        io_result->type( lv_type_name ).
       WHEN cl_abap_classdescr=>typekind_table.
+        lv_type_name = zcl_gql_schema_utils=>upper_camel_case( iv_method && |_| && iv_name ).
+
         io_result->list( ).
 
-        lo_object = mo_schema->object( iv_method && |_| && iv_name ).
+        lo_type = mo_schema->type( lv_type_name ).
 
         DATA(lo_table) = CAST cl_abap_tabledescr( mo_class->get_method_parameter_type(
                                                     p_method_name    = iv_method
@@ -356,7 +397,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
         lo_struc = CAST cl_abap_structdescr( lo_table->get_table_line_type( ) ).
 
         LOOP AT lo_struc->components REFERENCE INTO lr_component.
-          lo_field = lo_object->field( CONV #( lr_component->name ) ).
+          lo_field = lo_type->field( zcl_gql_schema_utils=>camel_case( CONV #( lr_component->name ) ) ).
 
           TRY.
               set_input_type(
@@ -364,12 +405,13 @@ CLASS zcl_gql_server IMPLEMENTATION.
                 iv_type  = lr_component->type_kind
                 io_field = lo_field
               ).
-            CATCH zcx_gql_error INTO mx_error.
+            CATCH zcx_gql_error INTO lx_error.
+              mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
               RETURN.
           ENDTRY.
         ENDLOOP.
 
-        io_result->object( lo_object ).
+        io_result->type( lv_type_name ).
       WHEN OTHERS.
         RAISE EXCEPTION TYPE zcx_gql_error
           MESSAGE e004 WITH iv_name.
@@ -413,12 +455,9 @@ CLASS zcl_gql_server IMPLEMENTATION.
 
     TRY.
         DATA(lv_search) = get_json_field( 'SEARCH' ).
-
-        IF lv_search IS INITIAL.
-          mo_response = NEW zcl_gql_response_search_object( lt_objects ).
-          RETURN.
-        ENDIF.
-      CATCH zcx_gql_error INTO mx_error.
+      CATCH zcx_gql_error INTO DATA(lx_error).
+        mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
+        RETURN.
     ENDTRY.
 
     TRANSLATE lv_search TO UPPER CASE.
@@ -434,7 +473,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
       WHERE clsname IN @lt_search
         AND langu = @sy-langu.
 
-    mo_response = NEW zcl_gql_response_search_object( lt_objects ).
+    mif_response = NEW zcl_gql_response_search_object( lt_objects ).
   ENDMETHOD.
 
   METHOD search_function.
@@ -442,12 +481,9 @@ CLASS zcl_gql_server IMPLEMENTATION.
 
     TRY.
         DATA(lv_search) = get_json_field( 'SEARCH' ).
-
-        IF lv_search IS INITIAL.
-          mo_response = NEW zcl_gql_response_search_object( lt_objects ).
-          RETURN.
-        ENDIF.
-      CATCH zcx_gql_error INTO mx_error.
+      CATCH zcx_gql_error INTO DATA(lx_error).
+        mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
+        RETURN.
     ENDTRY.
 
     TRANSLATE lv_search TO UPPER CASE.
@@ -464,49 +500,81 @@ CLASS zcl_gql_server IMPLEMENTATION.
       UP TO 50 ROWS
       INTO TABLE @lt_objects WHERE tfdir~funcname IN @lt_search.
 
-    mo_response = NEW zcl_gql_response_search_object( lt_objects ).
+    mif_response = NEW zcl_gql_response_search_object( lt_objects ).
   ENDMETHOD.
 
   METHOD save_schema.
     DATA: lv_component TYPE string,
           lt_db        TYPE TABLE OF zgql_schema.
 
-    FIELD-SYMBOLS: <schema> TYPE REF TO data.
+    FIELD-SYMBOLS: <schema> TYPE REF TO data,
+                   <data>   TYPE string.
 
     DATA(lv_endpoint) = get_endpoint( ).
 
     ASSIGN mo_json->* TO FIELD-SYMBOL(<json>).
 
-    DO.
-      CASE sy-index.
-        WHEN 1.
-          lv_component = 'OBJECT'.
-        WHEN 2.
-          lv_component = 'QUERY'.
-        WHEN 3.
-          lv_component = 'MUTATION'.
-        WHEN OTHERS.
-          EXIT.
-      ENDCASE.
+    ASSIGN COMPONENT 'TYPES' OF STRUCTURE <json> TO <schema>.
 
-      ASSIGN COMPONENT lv_component OF STRUCTURE <json> TO <schema>.
+    ASSIGN <schema>->* TO <data>.
 
-      ASSIGN <schema>->* TO FIELD-SYMBOL(<data>).
+    IF <data> IS ASSIGNED.
+      TRY.
+          LOOP AT zcl_gql_sdl_parser=>parse_types( zcl_gql_schema_utils=>clean_string( <data> ) ) REFERENCE INTO DATA(lr_type).
+            APPEND INITIAL LINE TO lt_db REFERENCE INTO DATA(lr_db).
+            lr_db->client      = sy-mandt.
+            lr_db->endpoint    = lv_endpoint.
+            lr_db->type_name   = zcl_gql_schema_generator=>get_type_name( lr_type->* ).
+            lr_db->schema_type = 'T'.
+            lr_db->data        = zcl_gql_schema_utils=>compress( zcl_gql_schema_utils=>serialize( lr_type->* ) ).
+          ENDLOOP.
+        CATCH zcx_gql_parser_error.
+      ENDTRY.
 
-      APPEND INITIAL LINE TO lt_db REFERENCE INTO DATA(lr_db).
-      lr_db->client      = sy-mandt.
-      lr_db->endpoint    = lv_endpoint.
-      lr_db->schema_type = lv_component(1).
-      lr_db->data        = <data>.
+      UNASSIGN <data>.
+    ENDIF.
 
-      IF <schema> IS ASSIGNED.
-        UNASSIGN <schema>.
-      ENDIF.
-    ENDDO.
+    ASSIGN COMPONENT 'QUERY' OF STRUCTURE <json> TO <schema>.
+
+    ASSIGN <schema>->* TO <data>.
+
+    IF <data> IS ASSIGNED.
+      TRY.
+          LOOP AT zcl_gql_sdl_parser=>parse_queries( zcl_gql_schema_utils=>clean_string( <data> ) ) REFERENCE INTO DATA(lr_query).
+            APPEND INITIAL LINE TO lt_db REFERENCE INTO lr_db.
+            lr_db->client      = sy-mandt.
+            lr_db->endpoint    = lv_endpoint.
+            lr_db->type_name   = zcl_gql_schema_generator=>get_query_name( lr_query->* ).
+            lr_db->schema_type = 'Q'.
+            lr_db->data        = zcl_gql_schema_utils=>compress( zcl_gql_schema_utils=>serialize( lr_query->* ) ).
+          ENDLOOP.
+        CATCH zcx_gql_parser_error.
+      ENDTRY.
+
+      UNASSIGN <data>.
+    ENDIF.
+
+    ASSIGN COMPONENT 'MUTATION' OF STRUCTURE <json> TO <schema>.
+
+    ASSIGN <schema>->* TO <data>.
+
+    IF <data> IS ASSIGNED.
+      TRY.
+          LOOP AT zcl_gql_sdl_parser=>parse_mutations( zcl_gql_schema_utils=>clean_string( <data> ) ) REFERENCE INTO DATA(lr_mutation).
+            APPEND INITIAL LINE TO lt_db REFERENCE INTO lr_db.
+            lr_db->client      = sy-mandt.
+            lr_db->endpoint    = lv_endpoint.
+            lr_db->type_name   = zcl_gql_schema_generator=>get_mutation_name( lr_mutation->* ).
+            lr_db->schema_type = 'M'.
+            lr_db->data        = zcl_gql_schema_utils=>compress( zcl_gql_schema_utils=>serialize( lr_mutation->* ) ).
+          ENDLOOP.
+        CATCH zcx_gql_parser_error.
+      ENDTRY.
+    ENDIF.
 
     MODIFY zgql_schema FROM TABLE lt_db.
     IF sy-subrc = 0.
-      mo_response = NEW zcl_gql_response_200( 'SUCCESS' ).
+      mif_response = NEW zcl_gql_response_200( 'SUCCESS' ).
     ENDIF.
   ENDMETHOD.
 
@@ -569,7 +637,8 @@ CLASS zcl_gql_server IMPLEMENTATION.
       TRY.
           handle_graphql( ).
         CATCH zcx_gql_error INTO DATA(lx_error).
-          RAISE EXCEPTION lx_error.
+          mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
+          RETURN.
       ENDTRY.
     ENDIF.
   ENDMETHOD.
@@ -594,11 +663,35 @@ CLASS zcl_gql_server IMPLEMENTATION.
     rv_result = <string>.
   ENDMETHOD.
 
+  METHOD get_json_field_ref.
+    FIELD-SYMBOLS: <ref>    TYPE REF TO data,
+                   <string> TYPE string.
+
+    ASSIGN mo_json->* TO FIELD-SYMBOL(<json>).
+
+    ASSIGN COMPONENT iv_field OF STRUCTURE <json> TO <ref>.
+
+    IF <ref> IS NOT ASSIGNED.
+      RAISE EXCEPTION TYPE zcx_gql_error
+        MESSAGE e000 WITH iv_field.
+    ENDIF.
+
+    rr_result = <ref>.
+  ENDMETHOD.
+
   METHOD read_graphql_data.
     TRY.
-        mv_operation = get_json_field( mc_gql_fields-operation_name ).
-        mv_query = get_json_field( mc_gql_fields-query ).
-*        mt_variables = get_json_field( mc_gql_fields-variables )->*.
+        DATA(lv_operation_name) = get_json_field( mc_gql_fields-operation_name ).
+        DATA(lv_query) = get_json_field( mc_gql_fields-query ).
+        DATA(lr_variables) = get_json_field_ref( mc_gql_fields-variables ).
+
+        DATA(lo_parser) = NEW zcl_gql_query_parser(
+          iv_operation_name = lv_operation_name
+          iv_query          = lv_query
+          ir_variables      = lr_variables
+        ).
+
+        mif_response = lo_parser->execute( ).
       CATCH zcx_gql_error INTO DATA(lx_error).
         RAISE EXCEPTION lx_error.
     ENDTRY.
@@ -616,12 +709,14 @@ CLASS zcl_gql_server IMPLEMENTATION.
       WHEN mc_operations-import_class.
         TRY.
             import_class( ).
-          CATCH zcx_gql_error INTO mx_error.
+          CATCH zcx_gql_error INTO DATA(lx_error).
+            mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
         ENDTRY.
       WHEN mc_operations-import_function.
         TRY.
             import_function( ).
-          CATCH zcx_gql_error INTO mx_error.
+          CATCH zcx_gql_error INTO lx_error.
+            mif_response = NEW zcl_gql_response_400( lx_error->get_text( ) ).
         ENDTRY.
       WHEN mc_operations-search_class.
         search_class( ).
@@ -635,7 +730,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD handle_options.
-    mo_response = NEW zcl_gql_response_200( 'OK' ).
+    mif_response = NEW zcl_gql_response_200( 'OK' ).
   ENDMETHOD.
 
   METHOD handle_get.
@@ -689,39 +784,7 @@ CLASS zcl_gql_server IMPLEMENTATION.
     rv_result = mo_server->request->get_content_type( ).
   ENDMETHOD.
 
-  METHOD handle_response.
-    allow_cors( ).
-
-    IF mx_error IS NOT BOUND.
-      mo_server->response->set_status(
-        code   = cl_rest_status_code=>gc_success_ok
-        reason = 'OK'
-      ).
-
-      mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
-
-      mo_server->response->set_cdata( /ui2/cl_json=>serialize(
-                                        data             = mo_response
-                                        pretty_name      = /ui2/cl_json=>pretty_mode-camel_case
-                                      ) ).
-    ELSE.
-      mo_server->response->set_status(
-        code   = cl_rest_status_code=>gc_client_error_bad_request
-        reason = mx_error->get_text( )
-      ).
-
-      mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
-
-      mo_server->response->set_cdata( /ui2/cl_json=>serialize(
-                                        data = NEW zcl_gql_response_400( mx_error->get_text( ) )
-                                        pretty_name = /ui2/cl_json=>pretty_mode-camel_case
-                                      ) ).
-    ENDIF.
-  ENDMETHOD.
-
-  METHOD if_http_extension~handle_request.
-    mo_server = server.
-
+  METHOD handle_request.
     CASE get_content_type( ).
       WHEN mc_content_types-application_json.
         CASE get_method( ).
@@ -740,7 +803,71 @@ CLASS zcl_gql_server IMPLEMENTATION.
             handle_options( ).
         ENDCASE.
     ENDCASE.
+  ENDMETHOD.
 
+  METHOD handle_response.
+    allow_cors( ).
+
+    mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
+
+    IF mif_response IS BOUND.
+      IF mif_response->is_error( ) = abap_true.
+        mo_server->response->set_status(
+          code = cl_rest_status_code=>gc_client_error_bad_request
+          reason = mif_response->get_json( )
+        ).
+
+        RETURN.
+      ENDIF.
+
+      mo_server->response->set_status(
+        code   = cl_rest_status_code=>gc_success_ok
+        reason = 'OK'
+      ).
+
+      mo_server->response->set_cdata( mif_response->get_json( ) ).
+    ELSE.
+      mif_response = NEW zcl_gql_response_400( 'Unhandled request' ).
+
+      mo_server->response->set_status(
+        code = cl_rest_status_code=>gc_client_error_bad_request
+        reason = mif_response->get_json( )
+      ).
+    ENDIF.
+
+*    IF mx_error IS NOT BOUND.
+*      mo_server->response->set_status(
+*        code   = cl_rest_status_code=>gc_success_ok
+*        reason = 'OK'
+*      ).
+*
+*      mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
+*
+*      mo_server->response->set_cdata( /ui2/cl_json=>serialize(
+**                                        expand_includes = abap_true
+*                                        data             = mif_response->get_data( )
+*                                        pretty_name      = /ui2/cl_json=>pretty_mode-camel_case
+*                                        name_mappings    = mif_response->get_mapping( )
+*                                      ) ).
+*    ELSE.
+*      mo_server->response->set_status(
+*        code   = cl_rest_status_code=>gc_client_error_bad_request
+*        reason = mx_error->get_text( )
+*      ).
+*
+*      mo_server->response->set_content_type( if_rest_media_type=>gc_appl_json ).
+*
+*      mo_server->response->set_cdata( /ui2/cl_json=>serialize(
+*                                        data = NEW zcl_gql_response_400( mx_error->get_text( ) )
+*                                        pretty_name = /ui2/cl_json=>pretty_mode-camel_case
+*                                      ) ).
+*    ENDIF.
+  ENDMETHOD.
+
+  METHOD if_http_extension~handle_request.
+    mo_server = server.
+
+    handle_request( ).
     handle_response( ).
   ENDMETHOD.
 ENDCLASS.

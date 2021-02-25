@@ -1,20 +1,27 @@
 CLASS zcl_gql_schema_result DEFINITION
   PUBLIC
   FINAL
-  CREATE PUBLIC GLOBAL FRIENDS zcl_gql_schema_generator.
+  CREATE PUBLIC
+  GLOBAL FRIENDS zcl_gql_schema_generator
+                 zcl_gql_query_parser.
 
   PUBLIC SECTION.
+    INTERFACES: if_serializable_object.
+
     METHODS:
       constructor
         IMPORTING
           iv_name TYPE string,
+      description
+        IMPORTING
+          iv_description TYPE string,
       string,
       boolean,
       float,
       int,
-      object
+      type
         IMPORTING
-                  io_object        TYPE REF TO zcl_gql_schema_object
+                  iv_name          TYPE string
         RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_result,
       required
         RETURNING VALUE(ro_result) TYPE REF TO zcl_gql_schema_result,
@@ -24,20 +31,19 @@ CLASS zcl_gql_schema_result DEFINITION
   PROTECTED SECTION.
 
   PRIVATE SECTION.
-    DATA: mv_name     TYPE string,
-          mv_list     TYPE abap_bool,
-          mv_required TYPE abap_bool,
-          mv_complex  TYPE abap_bool,
-          mv_type     TYPE c LENGTH 1,
-          mo_object   TYPE REF TO zcl_gql_schema_object.
+    DATA: mv_name        TYPE string,
+          mv_description TYPE string,
+          mv_list        TYPE abap_bool,
+          mv_required    TYPE abap_bool,
+          mv_type        TYPE string.
+
 ENDCLASS.
 
 
 
 CLASS zcl_gql_schema_result IMPLEMENTATION.
-  METHOD object.
-    mv_complex = abap_true.
-    mo_object = io_object.
+  METHOD type.
+    mv_type = iv_name.
   ENDMETHOD.
 
   METHOD required.
@@ -54,26 +60,26 @@ CLASS zcl_gql_schema_result IMPLEMENTATION.
 
   METHOD constructor.
     mv_required = abap_false.
-    mv_name = zcl_gql_schema_generator=>camel_case( iv_name ).
+    mv_name = iv_name.
+  ENDMETHOD.
+
+  METHOD description.
+    mv_description = iv_description.
   ENDMETHOD.
 
   METHOD string.
-    mv_complex = abap_false.
-    mv_type = zif_gql_schema=>mc_types-string.
+    mv_type = zif_gql_schema=>mc_basic_types-string.
   ENDMETHOD.
 
   METHOD boolean.
-    mv_complex = abap_false.
-    mv_type = zif_gql_schema=>mc_types-boolean.
+    mv_type = zif_gql_schema=>mc_basic_types-boolean.
   ENDMETHOD.
 
   METHOD float.
-    mv_complex = abap_false.
-    mv_type = zif_gql_schema=>mc_types-float.
+    mv_type = zif_gql_schema=>mc_basic_types-float.
   ENDMETHOD.
 
   METHOD int.
-    mv_complex = abap_false.
-    mv_type = zif_gql_schema=>mc_types-int.
+    mv_type = zif_gql_schema=>mc_basic_types-int.
   ENDMETHOD.
 ENDCLASS.

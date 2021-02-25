@@ -1,10 +1,14 @@
-CLASS zcl_gql_schema_input DEFINITION
+CLASS zcl_gql_schema_type DEFINITION
   PUBLIC
   FINAL
   CREATE PUBLIC
-  GLOBAL FRIENDS zcl_gql_schema_generator.
+  GLOBAL FRIENDS zcl_gql_schema_generator
+                 zcl_gql_query_parser
+                 zcl_gql_sdl_parser.
 
   PUBLIC SECTION.
+    INTERFACES: if_serializable_object.
+
     METHODS:
       constructor
         IMPORTING
@@ -28,7 +32,7 @@ ENDCLASS.
 
 
 
-CLASS zcl_gql_schema_input IMPLEMENTATION.
+CLASS zcl_gql_schema_type IMPLEMENTATION.
   METHOD constructor.
     mv_name = iv_name.
   ENDMETHOD.

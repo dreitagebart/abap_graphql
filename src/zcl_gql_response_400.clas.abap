@@ -4,7 +4,9 @@ CLASS zcl_gql_response_400 DEFINITION
   CREATE PUBLIC.
 
   PUBLIC SECTION.
-    DATA: message TYPE string.
+    INTERFACES: zif_gql_response.
+
+    DATA: mv_message TYPE string.
 
     METHODS:
       constructor
@@ -12,13 +14,23 @@ CLASS zcl_gql_response_400 DEFINITION
           iv_message TYPE string.
 
   PROTECTED SECTION.
+
   PRIVATE SECTION.
+
 ENDCLASS.
 
 
 
 CLASS zcl_gql_response_400 IMPLEMENTATION.
   METHOD constructor.
-    message = iv_message.
+    mv_message = iv_message.
+  ENDMETHOD.
+
+  METHOD zif_gql_response~is_error.
+    rv_result = abap_true.
+  ENDMETHOD.
+
+  METHOD zif_gql_response~get_json.
+    rv_result = mv_message.
   ENDMETHOD.
 ENDCLASS.

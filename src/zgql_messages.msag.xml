@@ -63,6 +63,11 @@
      <MSGNR>008</MSGNR>
      <TEXT>Query &amp;1 has no defined result</TEXT>
     </item>
+    <item>
+     <SPRSL>E</SPRSL>
+     <MSGNR>009</MSGNR>
+     <TEXT>Data not found in DB table</TEXT>
+    </item>
    </T100_TEXTS>
   </asx:values>
  </asx:abap>

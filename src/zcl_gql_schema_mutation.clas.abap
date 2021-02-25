@@ -1,13 +1,23 @@
 CLASS zcl_gql_schema_mutation DEFINITION
   PUBLIC
   FINAL
-  CREATE PUBLIC GLOBAL FRIENDS zcl_gql_schema_generator.
+  CREATE PUBLIC
+  GLOBAL FRIENDS zcl_gql_schema_generator
+                 zcl_gql_query_parser.
 
   PUBLIC SECTION.
+    INTERFACES: if_serializable_object.
+
     METHODS:
       constructor
         IMPORTING
           iv_name TYPE string,
+      description
+        IMPORTING
+          iv_description TYPE string,
+      directive
+        IMPORTING
+          iv_directive TYPE string,
       field
         IMPORTING
                   iv_name          TYPE string
@@ -20,9 +30,11 @@ CLASS zcl_gql_schema_mutation DEFINITION
   PROTECTED SECTION.
 
   PRIVATE SECTION.
-    DATA: mv_name   TYPE string,
-          mt_fields TYPE zif_gql_schema=>tt_field,
-          mo_result TYPE REF TO zcl_gql_schema_result.
+    DATA: mv_name        TYPE string,
+          mv_description TYPE string,
+          mv_directive   TYPE string,
+          mt_fields      TYPE zif_gql_schema=>tt_field,
+          mo_result      TYPE REF TO zcl_gql_schema_result.
 
 ENDCLASS.
 
@@ -30,13 +42,21 @@ ENDCLASS.
 
 CLASS zcl_gql_schema_mutation IMPLEMENTATION.
   METHOD constructor.
-    mv_name = zcl_gql_schema_generator=>camel_case( iv_name ).
+    mv_name = iv_name.
+  ENDMETHOD.
+
+  METHOD description.
+    mv_description = iv_description.
+  ENDMETHOD.
+
+  METHOD directive.
+    mv_directive = iv_directive.
   ENDMETHOD.
 
   METHOD field.
     DATA(lo_field) = NEW zcl_gql_schema_field( iv_name ).
 
-    APPEND VALUE #( instance = lo_field ) TO mt_fields.
+    APPEND lo_field TO mt_fields.
 
     ro_result = lo_field.
   ENDMETHOD.

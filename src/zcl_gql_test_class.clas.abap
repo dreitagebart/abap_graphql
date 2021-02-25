@@ -57,7 +57,14 @@ CLASS zcl_gql_test_class IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD update_material.
+    SELECT SINGLE * FROM zmara INTO @DATA(ls_mara) WHERE material = @material.
 
+    ls_mara-authorization_group = authorization_group.
+    ls_mara-material_type = material_type.
+
+    MODIFY zmara FROM ls_mara.
+
+    result = ls_mara.
   ENDMETHOD.
 
   METHOD delete_material.
@@ -65,6 +72,6 @@ CLASS zcl_gql_test_class IMPLEMENTATION.
   ENDMETHOD.
 
   METHOD get_materials.
-
+    SELECT * FROM zmara INTO TABLE @result.
   ENDMETHOD.
 ENDCLASS.

@@ -3,15 +3,16 @@
  <asx:abap xmlns:asx="http://www.sap.com/abapxml" version="1.0">
   <asx:values>
    <VSEOCLASS>
-    <CLSNAME>ZCL_GQL_PARSER</CLSNAME>
+    <CLSNAME>ZCX_GQL_PARSER_ERROR</CLSNAME>
     <LANGU>E</LANGU>
-    <DESCRIPT>ABAP GraphQL Parser</DESCRIPT>
+    <DESCRIPT>ABAP GraphQL Exception Parser Error</DESCRIPT>
+    <CATEGORY>40</CATEGORY>
     <STATE>1</STATE>
     <CLSCCINCL>X</CLSCCINCL>
     <FIXPT>X</FIXPT>
     <UNICODE>X</UNICODE>
+    <RSTAT>K</RSTAT>
     <MSG_ID>ZGQL_MESSAGES</MSG_ID>
-    <WITH_UNIT_TESTS>X</WITH_UNIT_TESTS>
    </VSEOCLASS>
   </asx:values>
  </asx:abap>
